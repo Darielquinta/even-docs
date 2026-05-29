@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#07111f" />
+    <title>G2 Docs Keyboard</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Even G2 utility</p>
+          <h1>G2 Docs Keyboard</h1>
+          <p class="subtitle">EHPK-safe local documents using Even App storage first. Bluetooth keyboard in, readable text out. Humanity recovers one tiny fraction of dignity.</p>
+        </div>
+        <div class="status-stack">
+          <div id="bridgeStatus" class="pill pill-waiting">Bridge: starting</div>
+          <div id="saveStatus" class="pill pill-waiting">Save: starting</div>
+          <div id="storageStatus" class="pill">Storage: starting</div>
+        </div>
+      </section>
+
+      <section class="toolbar primary" aria-label="Document controls">
+        <button id="newDocButton" type="button">New</button>
+        <button id="snapshotButton" type="button">Snapshot</button>
+        <button id="restoreButton" type="button">Restore</button>
+        <button id="deleteDocButton" type="button" class="danger">Delete</button>
+        <button id="exportButton" type="button">Export backup</button>
+        <button id="importButton" type="button">Import backup</button>
+        <input id="importFile" class="visually-hidden" type="file" accept="application/json,.json" />
+      </section>
+
+      <section class="doc-row">
+        <label>
+          <span>Open doc</span>
+          <select id="docSelect"></select>
+        </label>
+        <label class="title-label">
+          <span>Title</span>
+          <input id="docTitle" autocomplete="off" spellcheck="true" />
+        </label>
+      </section>
+
+      <section class="editor-card">
+        <div class="editor-head">
+          <strong>Type here</strong>
+          <span id="charCount">0 chars</span>
+        </div>
+        <textarea
+          id="editor"
+          autofocus
+          spellcheck="true"
+          autocomplete="off"
+          autocapitalize="sentences"
+          placeholder="Pair your Bluetooth keyboard to your phone, then type here. This build saves through the Even app bridge when packaged as EHPK."
+        ></textarea>
+      </section>
+
+      <section class="g2-panel">
+        <div class="panel-head">
+          <strong>G2 display</strong>
+          <span id="g2Meta">Page 1</span>
+        </div>
+        <div class="toolbar small">
+          <button id="focusButton" type="button">Focus keyboard</button>
+          <button id="prevPageButton" type="button">Prev page</button>
+          <button id="nextPageButton" type="button">Next page</button>
+          <button id="tailButton" type="button">Follow cursor</button>
+          <button id="sendTestButton" type="button">Test G2</button>
+        </div>
+      </section>
+
+      <details class="details-card" open>
+        <summary>EHPK local storage</summary>
+        <div class="grid-2 settings-grid">
+          <label>
+            <span>Auto snapshot minutes</span>
+            <input id="autoSnapshotMinutes" type="number" min="1" max="120" step="1" />
+          </label>
+          <label>
+            <span>G2 page characters</span>
+            <input id="g2PageSize" type="number" min="300" max="1800" step="50" />
+          </label>
+        </div>
+        <div class="toolbar settings-actions">
+          <button id="saveNowButton" type="button">Save now</button>
+          <button id="verifyStorageButton" type="button">Verify storage</button>
+          <button id="reloadLocalButton" type="button">Reload saved docs</button>
+          <button id="dangerWipeButton" type="button" class="danger ghost">Wipe app docs</button>
+        </div>
+        <p class="hint">This build uses <strong>bridge.setLocalStorage/getLocalStorage</strong> when the Even bridge is available, and browser localStorage only as a dev fallback. Keep the same <code>package_id</code> or you create a fresh storage silo, because computers enjoy petty bureaucracy.</p>
+      </details>
+
+      <details class="details-card" open>
+        <summary>Version history</summary>
+        <div id="versionList" class="version-list"></div>
+      </details>
+
+      <section class="shortcut-card">
+        <strong>Keyboard shortcuts</strong>
+        <p><kbd>Ctrl</kbd> + <kbd>S</kbd> save snapshot, <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> new doc, <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>E</kbd> export backup, <kbd>Alt</kbd> + arrows page the G2 view.</p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

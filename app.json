@@ -1,0 +1,15 @@
+{
+  "package_id": "com.dariel.g2docskeyboard",
+  "edition": "202601",
+  "name": "G2 Docs Keyboard",
+  "version": "2.0.0",
+  "description": "Bluetooth keyboard writing app for Even G2 with EHPK-safe Even App local storage, local snapshots, backup import/export, and G2 paging.",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.10",
+  "entrypoint": "index.html",
+  "permissions": [],
+  "network": [],
+  "supported_languages": [
+    "en"
+  ]
+}
