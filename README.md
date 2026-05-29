@@ -46,13 +46,14 @@ Changing the package ID can make the app look like it lost documents because it 
 
 - Multiple local docs
 - Local snapshots/version history
-- Restore snapshots
+- Restore snapshots from the phone or glasses menu
 - Export/import JSON backup
 - EHPK-safe chunked local save storage
 - Storage verification button
 - Bigger documents stored locally, paged into the G2 display
 - Bluetooth keyboard autofocus
-- G2 page controls
+- G2 page controls and glasses-side document menu
+- Markdown preview with simplified markdown text on G2
 
 ## Shortcuts
 
