@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">Even G2 utility</p>
           <h1>G2 Docs Keyboard</h1>
-          <p class="subtitle">EHPK-safe local documents using Even App storage first. Bluetooth keyboard in, readable text out. Humanity recovers one tiny fraction of dignity.</p>
+          <p class="subtitle">EHPK-safe local documents using Even App storage first. Bluetooth keyboard in, markdown-friendly readable text out. The glasses menu can switch documents, create snapshots, restore snapshots, and page through the active document.</p>
         </div>
         <div class="status-stack">
           <div id="bridgeStatus" class="pill pill-waiting">Bridge: starting</div>
@@ -67,9 +67,16 @@
           <button id="prevPageButton" type="button">Prev page</button>
           <button id="nextPageButton" type="button">Next page</button>
           <button id="tailButton" type="button">Follow cursor</button>
+          <button id="glassesMenuButton" type="button">Open glasses menu</button>
           <button id="sendTestButton" type="button">Test G2</button>
         </div>
       </section>
+
+      <details class="details-card" open>
+        <summary>Markdown preview</summary>
+        <div id="markdownPreview" class="markdown-preview"></div>
+        <p class="hint">Markdown headings, emphasis, inline code, fenced code blocks, and bullet lists are rendered here and simplified into readable text for the G2 display.</p>
+      </details>
 
       <details class="details-card" open>
         <summary>EHPK local storage</summary>

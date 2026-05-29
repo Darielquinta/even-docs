@@ -3,6 +3,9 @@ declare module '@evenrealities/even_hub_sdk' {
   export class TextContainerProperty {
     constructor(args: Record<string, unknown>)
   }
+  export class ListContainerProperty {
+    constructor(args: Record<string, unknown>)
+  }
   export class CreateStartUpPageContainer {
     constructor(args: Record<string, unknown>)
   }
