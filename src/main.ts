@@ -61,8 +61,6 @@ interface StorageMeta {
 
 const DISPLAY_WIDTH = 576
 const DISPLAY_HEIGHT = 288
-const EVENT_CONTAINER_ID = 1
-const EVENT_CONTAINER_NAME = 'evt'
 const SCREEN_CONTAINER_ID = 2
 const SCREEN_CONTAINER_NAME = 'screen'
 const MENU_CONTAINER_ID = 3
@@ -507,7 +505,7 @@ function isUpdateSuccess(result: RawResult): boolean {
   return text.includes('SUCCESS') || text.includes('UPGRADE_TEXT_DATA_SUCCESS') || text.includes('REBUILD_PAGE_SUCCESS')
 }
 
-function displayTextProperty(content: string): unknown {
+function displayTextProperty(content: string, isEventCapture = 1): unknown {
   return new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -520,27 +518,9 @@ function displayTextProperty(content: string): unknown {
     containerID: SCREEN_CONTAINER_ID,
     containerName: SCREEN_CONTAINER_NAME,
     content: content.slice(0, STARTUP_REBUILD_LIMIT),
-    isEventCapture: 0,
+    isEventCapture,
   })
 }
-
-function eventTextProperty(): unknown {
-  return new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: 1,
-    height: 1,
-    borderWidth: 0,
-    borderColor: 0,
-    borderRadius: 0,
-    paddingLength: 0,
-    containerID: EVENT_CONTAINER_ID,
-    containerName: EVENT_CONTAINER_NAME,
-    content: ' ',
-    isEventCapture: 1,
-  })
-}
-
 
 function menuTextProperty(content: string): unknown {
   return new TextContainerProperty({
@@ -622,8 +602,8 @@ function pageContainer(content: string): unknown {
     })
   }
   return new CreateStartUpPageContainer({
-    containerTotalNum: 2,
-    textObject: [eventTextProperty(), displayTextProperty(content)],
+    containerTotalNum: 1,
+    textObject: [displayTextProperty(content)],
   })
 }
 
@@ -636,19 +616,26 @@ function rebuildContainer(content: string): unknown {
     })
   }
   return new RebuildPageContainer({
-    containerTotalNum: 2,
-    textObject: [eventTextProperty(), displayTextProperty(content)],
+    containerTotalNum: 1,
+    textObject: [displayTextProperty(content)],
   })
 }
 
 async function ensureStartupPage(content: string): Promise<boolean> {
   if (!bridge) return false
-  if (startupPageCreated && g2Layout === g2Mode) return true
-  const result = await bridge.createStartUpPageContainer(pageContainer(content))
-  startupPageCreated = isStartupSuccess(result)
-  if (startupPageCreated) g2Layout = g2Mode
-  if (!startupPageCreated) console.warn('[G2DocsKeyboard] startup page failed:', result)
-  return startupPageCreated
+  if (!startupPageCreated) {
+    const result = await bridge.createStartUpPageContainer(pageContainer(content))
+    startupPageCreated = isStartupSuccess(result)
+    if (startupPageCreated) g2Layout = g2Mode
+    if (!startupPageCreated) console.warn('[G2DocsKeyboard] startup page failed:', result)
+    return startupPageCreated
+  }
+
+  if (g2Layout !== g2Mode) {
+    return rebuildG2(content)
+  }
+
+  return true
 }
 
 async function rebuildG2(content: string): Promise<boolean> {
@@ -1058,13 +1045,18 @@ async function connectBridge() {
     setPill(bridgeStatusEl, 'Bridge: connected', 'ready')
     showStorage(storageMode === 'bridge' ? 'Using Even App local storage' : 'Using browser fallback storage', storageMode === 'bridge' ? 'ready' : 'waiting')
 
+    if (bridge.onLaunchSource) {
+      bridge.onLaunchSource((source: string) => {
+        if (source === 'glassesMenu') openGlassesMenu()
+      })
+    }
+
     if (bridge.onEvenHubEvent) {
       bridge.onEvenHubEvent((event: any) => {
         if (event?.listEvent) handleListEvent(event.listEvent)
         if (event?.textEvent) handleTextEvent(event.textEvent)
         const eventType = event?.textEvent?.eventType ?? event?.sysEvent?.eventType
         if (eventType === OsEventTypeList?.FOREGROUND_ENTER_EVENT || eventType === 4) {
-          startupPageCreated = false
           g2Layout = ''
           lastSentToGlasses = ''
           scheduleG2Update(true)
@@ -1128,7 +1120,7 @@ async function verifyStorage() {
 function openGlassesMenu() {
   syncActiveDocFromForm()
   g2Mode = 'menu'
-  startupPageCreated = false
+  g2Layout = ''
   lastSentToGlasses = ''
   updateG2Meta()
   scheduleG2Update(true)
@@ -1136,7 +1128,7 @@ function openGlassesMenu() {
 
 function closeGlassesMenu() {
   g2Mode = 'document'
-  startupPageCreated = false
+  g2Layout = ''
   lastSentToGlasses = ''
   updateG2Meta()
   scheduleG2Update(true)
@@ -1221,7 +1213,30 @@ function handleG2MenuAction(item: G2MenuItem) {
   closeGlassesMenu()
 }
 
+function normalizedEventType(eventType: unknown): number | string | undefined {
+  const normalizer = (OsEventTypeList as Record<string, unknown>)?.fromJson
+  return typeof normalizer === 'function' ? normalizer(eventType) as number | string | undefined : eventType as number | string | undefined
+}
+
+function isClickEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  return normalized === OsEventTypeList?.CLICK_EVENT || normalized === OsEventTypeList?.DOUBLE_CLICK_EVENT || normalized === 0 || normalized === 3 || normalized === 'CLICK_EVENT' || normalized === 'DOUBLE_CLICK_EVENT'
+}
+
+function isScrollBottomEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  return normalized === OsEventTypeList?.SCROLL_BOTTOM_EVENT || normalized === 2 || normalized === 'SCROLL_BOTTOM_EVENT'
+}
+
+function isScrollTopEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  return normalized === OsEventTypeList?.SCROLL_TOP_EVENT || normalized === 1 || normalized === 'SCROLL_TOP_EVENT'
+}
+
 function handleListEvent(listEvent: any) {
+  if (listEvent?.containerID !== MENU_CONTAINER_ID && listEvent?.containerName !== MENU_CONTAINER_NAME) return
+  if (!isClickEvent(listEvent?.eventType)) return
+
   const item = menuItems.find((candidate, index) => (
     candidate.label === listEvent?.currentSelectItemName || index === Number(listEvent?.currentSelectItemIndex)
   ))
@@ -1229,8 +1244,16 @@ function handleListEvent(listEvent: any) {
 }
 
 function handleTextEvent(textEvent: any) {
-  if (textEvent?.containerID !== EVENT_CONTAINER_ID && textEvent?.containerName !== EVENT_CONTAINER_NAME) return
-  pageNextFromGlasses()
+  if (textEvent?.containerID !== SCREEN_CONTAINER_ID && textEvent?.containerName !== SCREEN_CONTAINER_NAME) return
+  if (isScrollBottomEvent(textEvent?.eventType)) {
+    pageNextFromGlasses()
+    return
+  }
+  if (isScrollTopEvent(textEvent?.eventType)) {
+    pagePreviousFromGlasses()
+    return
+  }
+  if (isClickEvent(textEvent?.eventType)) openGlassesMenu()
 }
 
 function wireEvents() {
@@ -1360,7 +1383,6 @@ function wireEvents() {
       void saveNow('hidden')
     } else {
       keepTryingFocus()
-      startupPageCreated = false
       g2Layout = ''
       lastSentToGlasses = ''
       scheduleG2Update(true)

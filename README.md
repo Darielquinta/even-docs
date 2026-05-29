@@ -53,6 +53,7 @@ Changing the package ID can make the app look like it lost documents because it 
 - Bigger documents stored locally, paged into the G2 display
 - Bluetooth keyboard autofocus
 - G2 page controls and glasses-side document menu
+- Glasses scroll gestures page the document; tapping the document opens the glasses menu
 - Markdown preview with simplified markdown text on G2
 
 ## Shortcuts
