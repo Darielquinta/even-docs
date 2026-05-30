@@ -1071,6 +1071,12 @@ async function connectBridge() {
     setPill(bridgeStatusEl, 'Bridge: connected', 'ready')
     showStorage(storageMode === 'bridge' ? 'Using Even App local storage' : 'Using browser fallback storage', storageMode === 'bridge' ? 'ready' : 'waiting')
 
+    if (bridge.onLaunchSource) {
+      bridge.onLaunchSource((source: string) => {
+        if (source === 'glassesMenu') openGlassesMenu()
+      })
+    }
+
     if (bridge.onEvenHubEvent) {
       bridge.onEvenHubEvent((event: any) => {
         const textEventType = normalizedEventType(event?.textEvent?.eventType)
