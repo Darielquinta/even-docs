@@ -1079,20 +1079,27 @@ async function connectBridge() {
 
     if (bridge.onEvenHubEvent) {
       bridge.onEvenHubEvent((event: any) => {
-        if (event?.listEvent) handleListEvent(event.listEvent)
-        if (event?.textEvent) handleTextEvent(event.textEvent)
-        if (event?.sysEvent) handleSysEvent(event.sysEvent)
-        const eventType = event?.textEvent?.eventType ?? event?.sysEvent?.eventType
-        if (eventType === OsEventTypeList?.FOREGROUND_ENTER_EVENT || eventType === 4) {
+        const textEventType = normalizedEventType(event?.textEvent?.eventType)
+        const sysEventType = normalizedEventType(event?.sysEvent?.eventType)
+        const lifecycleEventType = sysEventType ?? textEventType
+        if (isForegroundEnterEvent(lifecycleEventType)) {
           g2Layout = ''
           lastSentToGlasses = ''
           scheduleG2Update(true)
           keepTryingFocus()
           void saveNow('foreground')
         }
-        if (eventType === OsEventTypeList?.FOREGROUND_EXIT_EVENT || eventType === OsEventTypeList?.SYSTEM_EXIT_EVENT || eventType === 5 || eventType === 7) {
+        if (isForegroundExitEvent(lifecycleEventType)) {
           void saveNow('exit')
         }
+
+        const handledListEvent = event?.listEvent ? handleListEvent(event.listEvent) : false
+        if (handledListEvent) return
+
+        const handledTextEvent = event?.textEvent ? handleTextEvent(event.textEvent) : false
+        if (handledTextEvent) return
+
+        if (event?.sysEvent) handleSysEvent(event.sysEvent)
       })
     }
   } catch (error) {
@@ -1240,34 +1247,86 @@ function handleG2MenuAction(item: G2MenuItem) {
   closeGlassesMenu()
 }
 
+function primitiveEventValue(value: unknown): unknown {
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return record.value ?? record.name ?? record.eventType ?? record.type ?? value
+  }
+  return value
+}
+
 function normalizedEventType(eventType: unknown): number | string | undefined {
+  const raw = primitiveEventValue(eventType)
+  if (raw === undefined || raw === null || raw === '') return undefined
+  if (typeof raw === 'string' && /^-?\d+$/.test(raw.trim())) return Number(raw)
+
   const normalizer = (OsEventTypeList as Record<string, unknown>)?.fromJson
-  return typeof normalizer === 'function' ? normalizer(eventType) as number | string | undefined : eventType as number | string | undefined
+  const normalized = typeof normalizer === 'function' ? normalizer(raw) as number | string | undefined : raw as number | string | undefined
+  if (typeof normalized === 'string' && /^-?\d+$/.test(normalized.trim())) return Number(normalized)
+  return normalized
+}
+
+function eventTypeName(eventType: unknown): string {
+  const normalized = normalizedEventType(eventType)
+  return String(normalized ?? primitiveEventValue(eventType) ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
 }
 
 function isClickEvent(eventType: unknown): boolean {
   const normalized = normalizedEventType(eventType)
-  return normalized === OsEventTypeList?.CLICK_EVENT || normalized === OsEventTypeList?.DOUBLE_CLICK_EVENT || normalized === 0 || normalized === 3 || normalized === 'CLICK_EVENT' || normalized === 'DOUBLE_CLICK_EVENT'
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.CLICK_EVENT || normalized === OsEventTypeList?.DOUBLE_CLICK_EVENT || normalized === 0 || normalized === 3 || name === 'CLICK_EVENT' || name === 'DOUBLE_CLICK_EVENT' || name === 'CLICK' || name === 'DOUBLE_CLICK'
 }
 
 function isScrollBottomEvent(eventType: unknown): boolean {
   const normalized = normalizedEventType(eventType)
-  return normalized === OsEventTypeList?.SCROLL_BOTTOM_EVENT || normalized === 2 || normalized === 'SCROLL_BOTTOM_EVENT'
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.SCROLL_BOTTOM_EVENT || normalized === 2 || name === 'SCROLL_BOTTOM_EVENT' || name === 'SCROLL_BOTTOM' || name === 'SCROLL_DOWN' || name === 'DOWN'
 }
 
 function isScrollTopEvent(eventType: unknown): boolean {
   const normalized = normalizedEventType(eventType)
-  return normalized === OsEventTypeList?.SCROLL_TOP_EVENT || normalized === 1 || normalized === 'SCROLL_TOP_EVENT'
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.SCROLL_TOP_EVENT || normalized === 1 || name === 'SCROLL_TOP_EVENT' || name === 'SCROLL_TOP' || name === 'SCROLL_UP' || name === 'UP'
+}
+
+function isForegroundEnterEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.FOREGROUND_ENTER_EVENT || normalized === 4 || name === 'FOREGROUND_ENTER_EVENT' || name === 'FOREGROUND_ENTER'
+}
+
+function isForegroundExitEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.FOREGROUND_EXIT_EVENT || normalized === OsEventTypeList?.SYSTEM_EXIT_EVENT || normalized === 5 || normalized === 7 || name === 'FOREGROUND_EXIT_EVENT' || name === 'SYSTEM_EXIT_EVENT' || name === 'FOREGROUND_EXIT' || name === 'SYSTEM_EXIT'
 }
 
 function normalizedEventSource(eventSource: unknown): number | string | undefined {
+  const raw = primitiveEventValue(eventSource)
+  if (raw === undefined || raw === null || raw === '') return undefined
+  if (typeof raw === 'string' && /^-?\d+$/.test(raw.trim())) return Number(raw)
+
   const normalizer = (EventSourceType as Record<string, unknown>)?.fromJson
-  return typeof normalizer === 'function' ? normalizer(eventSource) as number | string | undefined : eventSource as number | string | undefined
+  const normalized = typeof normalizer === 'function' ? normalizer(raw) as number | string | undefined : raw as number | string | undefined
+  if (typeof normalized === 'string' && /^-?\d+$/.test(normalized.trim())) return Number(normalized)
+  return normalized
+}
+
+function eventSourceName(eventSource: unknown): string {
+  const normalized = normalizedEventSource(eventSource)
+  return String(normalized ?? primitiveEventValue(eventSource) ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
 }
 
 function isRingEventSource(eventSource: unknown): boolean {
   const normalized = normalizedEventSource(eventSource)
-  return normalized === EventSourceType?.TOUCH_EVENT_FROM_RING || normalized === 2 || normalized === 'TOUCH_EVENT_FROM_RING'
+  const name = eventSourceName(eventSource)
+  return normalized === EventSourceType?.TOUCH_EVENT_FROM_RING || normalized === 2 || name === 'TOUCH_EVENT_FROM_RING' || name === 'RING'
+}
+
+function isGestureEventSource(eventSource: unknown): boolean {
+  const normalized = normalizedEventSource(eventSource)
+  const name = eventSourceName(eventSource)
+  return eventSource === undefined || eventSource === null || eventSource === '' || isRingEventSource(eventSource) || normalized === EventSourceType?.TOUCH_EVENT_FROM_GLASSES_L || normalized === EventSourceType?.TOUCH_EVENT_FROM_GLASSES_R || normalized === 1 || normalized === 3 || name === 'TOUCH_EVENT_FROM_GLASSES_L' || name === 'TOUCH_EVENT_FROM_GLASSES_R' || name === 'GLASSES_L' || name === 'GLASSES_R'
 }
 
 function toggleGlassesMenu() {
@@ -1275,41 +1334,85 @@ function toggleGlassesMenu() {
   else openGlassesMenu()
 }
 
-function handleSysEvent(sysEvent: any) {
-  if (!isRingEventSource(sysEvent?.eventSource)) return
+function handleSysEvent(sysEvent: any): boolean {
+  if (!isGestureEventSource(sysEvent?.eventSource)) return false
 
   if (isScrollBottomEvent(sysEvent?.eventType)) {
     if (g2Mode !== 'menu') pageNextFromGlasses()
-    return
+    return true
   }
   if (isScrollTopEvent(sysEvent?.eventType)) {
     if (g2Mode !== 'menu') pagePreviousFromGlasses()
-    return
+    return true
   }
-  if (isClickEvent(sysEvent?.eventType)) toggleGlassesMenu()
+  if (isClickEvent(sysEvent?.eventType)) {
+    toggleGlassesMenu()
+    return true
+  }
+  return false
 }
 
-function handleListEvent(listEvent: any) {
-  if (listEvent?.containerID !== MENU_CONTAINER_ID && listEvent?.containerName !== MENU_CONTAINER_NAME) return
-  if (!isClickEvent(listEvent?.eventType)) return
-
-  const item = menuItems.find((candidate, index) => (
-    candidate.label === listEvent?.currentSelectItemName || index === Number(listEvent?.currentSelectItemIndex)
-  ))
-  if (item) handleG2MenuAction(item)
+function maybeNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number(value)
+  return undefined
 }
 
-function handleTextEvent(textEvent: any) {
-  if (textEvent?.containerID !== SCREEN_CONTAINER_ID && textEvent?.containerName !== SCREEN_CONTAINER_NAME) return
+function selectedMenuItemForEvent(listEvent: any): G2MenuItem | undefined {
+  const selectedName = [
+    listEvent?.currentSelectItemName,
+    listEvent?.currentSelectedItemName,
+    listEvent?.selectItemName,
+    listEvent?.selectedItemName,
+    listEvent?.itemName,
+  ].find((value) => typeof value === 'string' && value.length) as string | undefined
+
+  if (selectedName) {
+    const byName = menuItems.find((candidate) => candidate.label === selectedName)
+    if (byName) return byName
+  }
+
+  const selectedIndex = [
+    listEvent?.currentSelectItemIndex,
+    listEvent?.currentSelectedItemIndex,
+    listEvent?.selectItemIndex,
+    listEvent?.selectedItemIndex,
+    listEvent?.itemIndex,
+    listEvent?.index,
+    listEvent?.currentIndex,
+  ].map(maybeNumber).find((value) => value !== undefined)
+
+  if (selectedIndex === undefined) return undefined
+  return menuItems[selectedIndex] ?? menuItems[selectedIndex - 1]
+}
+
+function handleListEvent(listEvent: any): boolean {
+  if (maybeNumber(listEvent?.containerID) !== MENU_CONTAINER_ID && listEvent?.containerName !== MENU_CONTAINER_NAME) return false
+  const hasSelection = selectedMenuItemForEvent(listEvent) !== undefined
+  if (listEvent?.eventType !== undefined && !isClickEvent(listEvent.eventType)) return false
+  if (!hasSelection) return false
+
+  const item = selectedMenuItemForEvent(listEvent)
+  if (!item) return false
+  handleG2MenuAction(item)
+  return true
+}
+
+function handleTextEvent(textEvent: any): boolean {
+  if (maybeNumber(textEvent?.containerID) !== SCREEN_CONTAINER_ID && textEvent?.containerName !== SCREEN_CONTAINER_NAME) return false
   if (isScrollBottomEvent(textEvent?.eventType)) {
     pageNextFromGlasses()
-    return
+    return true
   }
   if (isScrollTopEvent(textEvent?.eventType)) {
     pagePreviousFromGlasses()
-    return
+    return true
   }
-  if (isClickEvent(textEvent?.eventType)) toggleGlassesMenu()
+  if (isClickEvent(textEvent?.eventType)) {
+    toggleGlassesMenu()
+    return true
+  }
+  return false
 }
 
 function wireEvents() {
