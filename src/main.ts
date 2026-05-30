@@ -135,12 +135,20 @@ let composing = false
 let g2Mode: 'document' | 'menu' = 'document'
 let g2Layout: 'document' | 'menu' | '' = ''
 let menuItems: G2MenuItem[] = []
+let startupKeyboardFocusTimer: number | undefined
+let startupKeyboardFocusActive = false
 
 interface G2MenuItem {
   label: string
   action: string
   docId?: string
   versionId?: string
+}
+
+interface VirtualKeyboardNavigator extends Navigator {
+  virtualKeyboard?: {
+    show?: () => void
+  }
 }
 
 function makeId(prefix: string): string {
@@ -917,7 +925,7 @@ function renderActiveDoc() {
   updateMarkdownPreview()
   updateG2Meta()
   scheduleG2Update(true)
-  keepTryingFocus()
+  keepTryingFocus({ force: true, reveal: true })
 }
 
 function renderAll() {
@@ -1050,17 +1058,60 @@ async function importBackupFile(file: File) {
   }
 }
 
-function focusEditor() {
-  editorEl.focus({ preventScroll: true })
+function showVirtualKeyboard() {
+  try {
+    (navigator as VirtualKeyboardNavigator).virtualKeyboard?.show?.()
+  } catch {
+    // Browser support varies; normal focus still handles hardware keyboards.
+  }
+}
+
+function focusEditor(options: { force?: boolean; reveal?: boolean; preventScroll?: boolean } = {}) {
+  const activeElement = document.activeElement
+  const mayFocus = options.force || !activeElement || activeElement === document.body || activeElement === document.documentElement || activeElement === editorEl
+  if (!mayFocus) return false
+
+  if (options.reveal) editorEl.scrollIntoView({ block: 'center', inline: 'nearest' })
+
+  editorEl.focus({ preventScroll: options.preventScroll ?? !options.reveal })
   const doc = activeDoc()
   const cursor = Math.min(doc.cursor ?? editorEl.value.length, editorEl.value.length)
   editorEl.setSelectionRange(cursor, cursor)
+  showVirtualKeyboard()
+  return document.activeElement === editorEl
 }
 
-function keepTryingFocus() {
+function keepTryingFocus(options: { force?: boolean; reveal?: boolean } = {}) {
+  focusEditor({ ...options, preventScroll: !options.reveal })
+  window.requestAnimationFrame(() => focusEditor({ ...options, preventScroll: !options.reveal }))
   for (const delay of [40, 120, 300, 700, 1300, 2200]) {
-    window.setTimeout(focusEditor, delay)
+    window.setTimeout(() => focusEditor({ ...options, preventScroll: !options.reveal }), delay)
   }
+}
+
+function stopStartupKeyboardFocus() {
+  startupKeyboardFocusActive = false
+  if (startupKeyboardFocusTimer !== undefined) {
+    window.clearInterval(startupKeyboardFocusTimer)
+    startupKeyboardFocusTimer = undefined
+  }
+}
+
+function startStartupKeyboardFocus() {
+  stopStartupKeyboardFocus()
+  startupKeyboardFocusActive = true
+  const startedAt = Date.now()
+  const attemptFocus = () => {
+    if (!startupKeyboardFocusActive || Date.now() - startedAt > 10_000) {
+      stopStartupKeyboardFocus()
+      return
+    }
+    focusEditor({ force: true, reveal: true, preventScroll: false })
+  }
+
+  attemptFocus()
+  window.requestAnimationFrame(attemptFocus)
+  startupKeyboardFocusTimer = window.setInterval(attemptFocus, 400)
 }
 
 async function connectBridge() {
@@ -1086,7 +1137,7 @@ async function connectBridge() {
           g2Layout = ''
           lastSentToGlasses = ''
           scheduleG2Update(true)
-          keepTryingFocus()
+          keepTryingFocus({ force: true, reveal: true })
           void saveNow('foreground')
         }
         if (isForegroundExitEvent(lifecycleEventType)) {
@@ -1416,6 +1467,9 @@ function handleTextEvent(textEvent: any): boolean {
 }
 
 function wireEvents() {
+  document.addEventListener('focusin', (event) => {
+    if (startupKeyboardFocusActive && event.target !== editorEl) stopStartupKeyboardFocus()
+  })
   editorEl.addEventListener('compositionstart', () => { composing = true })
   editorEl.addEventListener('compositionend', () => {
     composing = false
@@ -1457,7 +1511,7 @@ function wireEvents() {
     const file = importFileEl.files?.[0]
     if (file) void importBackupFile(file)
   })
-  focusButton.addEventListener('click', focusEditor)
+  focusButton.addEventListener('click', () => keepTryingFocus({ force: true, reveal: true }))
   prevPageButton.addEventListener('click', () => {
     const doc = activeDoc()
     doc.followCursor = false
@@ -1538,14 +1592,14 @@ function wireEvents() {
     if (document.visibilityState === 'hidden') {
       void saveNow('hidden')
     } else {
-      keepTryingFocus()
+      keepTryingFocus({ force: true, reveal: true })
       g2Mode = 'document'
       g2Layout = ''
       lastSentToGlasses = ''
       scheduleG2Update(true)
     }
   })
-  window.addEventListener('focus', keepTryingFocus)
+  window.addEventListener('focus', () => keepTryingFocus({ force: true, reveal: true }))
 
   window.addEventListener('pagehide', () => {
     emergencyBrowserMirror()
@@ -1558,10 +1612,11 @@ function wireEvents() {
 
 async function boot() {
   wireEvents()
-  keepTryingFocus()
+  startStartupKeyboardFocus()
   await connectBridge()
   await loadInitialState()
   renderAll()
+  startStartupKeyboardFocus()
   startG2Poll()
   void verifyStorage()
 }
