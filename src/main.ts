@@ -7,6 +7,7 @@ import {
   RebuildPageContainer,
   TextContainerUpgrade,
   OsEventTypeList,
+  EventSourceType,
 } from '@evenrealities/even_hub_sdk'
 
 type EvenBridge = Awaited<ReturnType<typeof waitForEvenAppBridge>>
@@ -68,6 +69,8 @@ const MENU_CONTAINER_NAME = 'menu'
 const STARTUP_REBUILD_LIMIT = 1000
 const UPGRADE_LIMIT = 1900
 const BRIDGE_TIMEOUT_MS = 5000
+const G2_PAGE_CHARS_PER_LINE = 38
+const G2_PAGE_BODY_LINES = 8
 
 // Faster G2 display updates, slower/heavier storage writes.
 const SAVE_DEBOUNCE_MS = 900
@@ -462,13 +465,37 @@ function syncActiveDocFromForm() {
   doc.g2Page = doc.followCursor ? pageForCursor(doc) : clampPage(doc)
 }
 
-function pageSize(): number {
-  return Math.max(300, Math.min(1800, Number(state.settings.g2PageSize || 1200)))
+function wrapG2Line(line: string): string[] {
+  if (!line) return ['']
+
+  const wrapped: string[] = []
+  let remaining = line.trimEnd()
+  while (remaining.length > G2_PAGE_CHARS_PER_LINE) {
+    const windowText = remaining.slice(0, G2_PAGE_CHARS_PER_LINE + 1)
+    const breakAt = Math.max(windowText.lastIndexOf(' '), windowText.lastIndexOf('\t'))
+    const chunkLength = breakAt > G2_PAGE_CHARS_PER_LINE * 0.45 ? breakAt : G2_PAGE_CHARS_PER_LINE
+    wrapped.push(remaining.slice(0, chunkLength).trimEnd())
+    remaining = remaining.slice(chunkLength).trimStart()
+  }
+  wrapped.push(remaining)
+  return wrapped
+}
+
+function g2BodyPagesFor(renderedText: string): string[] {
+  const wrappedLines = renderedText
+    .split('\n')
+    .flatMap((line) => wrapG2Line(line))
+
+  const pages: string[] = []
+  for (let i = 0; i < wrappedLines.length; i += G2_PAGE_BODY_LINES) {
+    pages.push(wrappedLines.slice(i, i + G2_PAGE_BODY_LINES).join('\n').trimEnd())
+  }
+
+  return pages.length ? pages : ['']
 }
 
 function totalPagesFor(text: string): number {
-  const rendered = markdownToG2Text(text)
-  return Math.max(1, Math.ceil(Math.max(1, rendered.length) / pageSize()))
+  return g2BodyPagesFor(markdownToG2Text(text)).length
 }
 
 function clampPage(doc: DocRecord): number {
@@ -477,19 +504,18 @@ function clampPage(doc: DocRecord): number {
 }
 
 function pageForCursor(doc: DocRecord): number {
-  return Math.max(0, Math.floor(Math.max(0, doc.cursor) / pageSize()))
+  const renderedBeforeCursor = markdownToG2Text(doc.body.slice(0, Math.max(0, doc.cursor)))
+  return Math.max(0, g2BodyPagesFor(renderedBeforeCursor).length - 1)
 }
 
 function getG2Chunk(doc: DocRecord): string {
-  if (!doc.body.trim()) return EMPTY_DOC_TEXT
-  const total = totalPagesFor(doc.body)
+  const renderedBody = doc.body.trim() ? markdownToG2Text(doc.body) : EMPTY_DOC_TEXT
+  const pages = g2BodyPagesFor(renderedBody)
+  const total = pages.length
   const page = doc.followCursor ? pageForCursor(doc) : clampPage(doc)
   doc.g2Page = Math.max(0, Math.min(total - 1, page))
-  const start = doc.g2Page * pageSize()
-  const renderedBody = markdownToG2Text(doc.body)
-  const raw = renderedBody.slice(start, start + pageSize())
-  const header = `${doc.title || 'Untitled'} · ${doc.g2Page + 1}/${total} · ${g2Mode === 'menu' ? 'menu' : 'doc'}\n`
-  return `${header}${raw}`.slice(0, UPGRADE_LIMIT)
+  const header = `${doc.title || 'Untitled'} · ${doc.g2Page + 1}/${total} · ${g2Mode === 'menu' ? 'menu' : 'doc'}`
+  return `${header}\n${pages[doc.g2Page]}`.slice(0, UPGRADE_LIMIT)
 }
 
 function isStartupSuccess(result: RawResult): boolean {
@@ -1027,7 +1053,7 @@ async function importBackupFile(file: File) {
 function focusEditor() {
   editorEl.focus({ preventScroll: true })
   const doc = activeDoc()
-  const cursor = Math.min(doc.cursor || editorEl.value.length, editorEl.value.length)
+  const cursor = Math.min(doc.cursor ?? editorEl.value.length, editorEl.value.length)
   editorEl.setSelectionRange(cursor, cursor)
 }
 
@@ -1055,6 +1081,7 @@ async function connectBridge() {
       bridge.onEvenHubEvent((event: any) => {
         if (event?.listEvent) handleListEvent(event.listEvent)
         if (event?.textEvent) handleTextEvent(event.textEvent)
+        if (event?.sysEvent) handleSysEvent(event.sysEvent)
         const eventType = event?.textEvent?.eventType ?? event?.sysEvent?.eventType
         if (eventType === OsEventTypeList?.FOREGROUND_ENTER_EVENT || eventType === 4) {
           g2Layout = ''
@@ -1233,6 +1260,35 @@ function isScrollTopEvent(eventType: unknown): boolean {
   return normalized === OsEventTypeList?.SCROLL_TOP_EVENT || normalized === 1 || normalized === 'SCROLL_TOP_EVENT'
 }
 
+function normalizedEventSource(eventSource: unknown): number | string | undefined {
+  const normalizer = (EventSourceType as Record<string, unknown>)?.fromJson
+  return typeof normalizer === 'function' ? normalizer(eventSource) as number | string | undefined : eventSource as number | string | undefined
+}
+
+function isRingEventSource(eventSource: unknown): boolean {
+  const normalized = normalizedEventSource(eventSource)
+  return normalized === EventSourceType?.TOUCH_EVENT_FROM_RING || normalized === 2 || normalized === 'TOUCH_EVENT_FROM_RING'
+}
+
+function toggleGlassesMenu() {
+  if (g2Mode === 'menu') closeGlassesMenu()
+  else openGlassesMenu()
+}
+
+function handleSysEvent(sysEvent: any) {
+  if (!isRingEventSource(sysEvent?.eventSource)) return
+
+  if (isScrollBottomEvent(sysEvent?.eventType)) {
+    if (g2Mode !== 'menu') pageNextFromGlasses()
+    return
+  }
+  if (isScrollTopEvent(sysEvent?.eventType)) {
+    if (g2Mode !== 'menu') pagePreviousFromGlasses()
+    return
+  }
+  if (isClickEvent(sysEvent?.eventType)) toggleGlassesMenu()
+}
+
 function handleListEvent(listEvent: any) {
   if (listEvent?.containerID !== MENU_CONTAINER_ID && listEvent?.containerName !== MENU_CONTAINER_NAME) return
   if (!isClickEvent(listEvent?.eventType)) return
@@ -1253,7 +1309,7 @@ function handleTextEvent(textEvent: any) {
     pagePreviousFromGlasses()
     return
   }
-  if (isClickEvent(textEvent?.eventType)) openGlassesMenu()
+  if (isClickEvent(textEvent?.eventType)) toggleGlassesMenu()
 }
 
 function wireEvents() {
@@ -1313,10 +1369,7 @@ function wireEvents() {
     updateG2Meta()
     markDirtyAndSave('page')
   })
-  glassesMenuButton.addEventListener('click', () => {
-    if (g2Mode === 'menu') closeGlassesMenu()
-    else openGlassesMenu()
-  })
+  glassesMenuButton.addEventListener('click', toggleGlassesMenu)
   tailButton.addEventListener('click', () => {
     const doc = activeDoc()
     doc.followCursor = true
@@ -1383,11 +1436,14 @@ function wireEvents() {
       void saveNow('hidden')
     } else {
       keepTryingFocus()
+      g2Mode = 'document'
       g2Layout = ''
       lastSentToGlasses = ''
       scheduleG2Update(true)
     }
   })
+  window.addEventListener('focus', keepTryingFocus)
+
   window.addEventListener('pagehide', () => {
     emergencyBrowserMirror()
     void saveNow('pagehide')

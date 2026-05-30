@@ -15,5 +15,6 @@ declare module '@evenrealities/even_hub_sdk' {
   export class TextContainerUpgrade {
     constructor(args: Record<string, unknown>)
   }
-  export const OsEventTypeList: Record<string, string | number>
+  export const OsEventTypeList: Record<string, string | number | ((raw: unknown) => unknown)>
+  export const EventSourceType: Record<string, string | number | ((raw: unknown) => unknown)>
 }
