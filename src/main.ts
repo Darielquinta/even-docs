@@ -2,10 +2,12 @@ import './style.css'
 import {
   waitForEvenAppBridge,
   TextContainerProperty,
+  ListContainerProperty,
   CreateStartUpPageContainer,
   RebuildPageContainer,
   TextContainerUpgrade,
   OsEventTypeList,
+  EventSourceType,
 } from '@evenrealities/even_hub_sdk'
 
 type EvenBridge = Awaited<ReturnType<typeof waitForEvenAppBridge>>
@@ -60,13 +62,15 @@ interface StorageMeta {
 
 const DISPLAY_WIDTH = 576
 const DISPLAY_HEIGHT = 288
-const EVENT_CONTAINER_ID = 1
-const EVENT_CONTAINER_NAME = 'evt'
 const SCREEN_CONTAINER_ID = 2
 const SCREEN_CONTAINER_NAME = 'screen'
+const MENU_CONTAINER_ID = 3
+const MENU_CONTAINER_NAME = 'menu'
 const STARTUP_REBUILD_LIMIT = 1000
 const UPGRADE_LIMIT = 1900
 const BRIDGE_TIMEOUT_MS = 5000
+const G2_PAGE_CHARS_PER_LINE = 38
+const G2_PAGE_BODY_LINES = 8
 
 // Faster G2 display updates, slower/heavier storage writes.
 const SAVE_DEBOUNCE_MS = 900
@@ -93,6 +97,7 @@ const versionListEl = document.querySelector<HTMLDivElement>('#versionList')!
 const autoSnapshotMinutesEl = document.querySelector<HTMLInputElement>('#autoSnapshotMinutes')!
 const g2PageSizeEl = document.querySelector<HTMLInputElement>('#g2PageSize')!
 const importFileEl = document.querySelector<HTMLInputElement>('#importFile')!
+const markdownPreviewEl = document.querySelector<HTMLDivElement>('#markdownPreview')!
 
 const newDocButton = document.querySelector<HTMLButtonElement>('#newDocButton')!
 const snapshotButton = document.querySelector<HTMLButtonElement>('#snapshotButton')!
@@ -104,6 +109,7 @@ const focusButton = document.querySelector<HTMLButtonElement>('#focusButton')!
 const prevPageButton = document.querySelector<HTMLButtonElement>('#prevPageButton')!
 const nextPageButton = document.querySelector<HTMLButtonElement>('#nextPageButton')!
 const tailButton = document.querySelector<HTMLButtonElement>('#tailButton')!
+const glassesMenuButton = document.querySelector<HTMLButtonElement>('#glassesMenuButton')!
 const sendTestButton = document.querySelector<HTMLButtonElement>('#sendTestButton')!
 const saveNowButton = document.querySelector<HTMLButtonElement>('#saveNowButton')!
 const verifyStorageButton = document.querySelector<HTMLButtonElement>('#verifyStorageButton')!
@@ -126,6 +132,16 @@ let dirtyDuringSave = false
 let lastSavedHash = ''
 let lastSentToGlasses = ''
 let composing = false
+let g2Mode: 'document' | 'menu' = 'document'
+let g2Layout: 'document' | 'menu' | '' = ''
+let menuItems: G2MenuItem[] = []
+
+interface G2MenuItem {
+  label: string
+  action: string
+  docId?: string
+  versionId?: string
+}
 
 function makeId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
@@ -392,6 +408,7 @@ function markDirtyAndSave(reason = 'edit') {
   state.updatedAt = Date.now()
 
   updateCharCount()
+  updateMarkdownPreview()
   updateG2Meta()
   scheduleG2Update()
 
@@ -448,12 +465,37 @@ function syncActiveDocFromForm() {
   doc.g2Page = doc.followCursor ? pageForCursor(doc) : clampPage(doc)
 }
 
-function pageSize(): number {
-  return Math.max(300, Math.min(1800, Number(state.settings.g2PageSize || 1200)))
+function wrapG2Line(line: string): string[] {
+  if (!line) return ['']
+
+  const wrapped: string[] = []
+  let remaining = line.trimEnd()
+  while (remaining.length > G2_PAGE_CHARS_PER_LINE) {
+    const windowText = remaining.slice(0, G2_PAGE_CHARS_PER_LINE + 1)
+    const breakAt = Math.max(windowText.lastIndexOf(' '), windowText.lastIndexOf('\t'))
+    const chunkLength = breakAt > G2_PAGE_CHARS_PER_LINE * 0.45 ? breakAt : G2_PAGE_CHARS_PER_LINE
+    wrapped.push(remaining.slice(0, chunkLength).trimEnd())
+    remaining = remaining.slice(chunkLength).trimStart()
+  }
+  wrapped.push(remaining)
+  return wrapped
+}
+
+function g2BodyPagesFor(renderedText: string): string[] {
+  const wrappedLines = renderedText
+    .split('\n')
+    .flatMap((line) => wrapG2Line(line))
+
+  const pages: string[] = []
+  for (let i = 0; i < wrappedLines.length; i += G2_PAGE_BODY_LINES) {
+    pages.push(wrappedLines.slice(i, i + G2_PAGE_BODY_LINES).join('\n').trimEnd())
+  }
+
+  return pages.length ? pages : ['']
 }
 
 function totalPagesFor(text: string): number {
-  return Math.max(1, Math.ceil(Math.max(1, text.length) / pageSize()))
+  return g2BodyPagesFor(markdownToG2Text(text)).length
 }
 
 function clampPage(doc: DocRecord): number {
@@ -462,18 +504,18 @@ function clampPage(doc: DocRecord): number {
 }
 
 function pageForCursor(doc: DocRecord): number {
-  return Math.max(0, Math.floor(Math.max(0, doc.cursor) / pageSize()))
+  const renderedBeforeCursor = markdownToG2Text(doc.body.slice(0, Math.max(0, doc.cursor)))
+  return Math.max(0, g2BodyPagesFor(renderedBeforeCursor).length - 1)
 }
 
 function getG2Chunk(doc: DocRecord): string {
-  if (!doc.body.trim()) return EMPTY_DOC_TEXT
-  const total = totalPagesFor(doc.body)
+  const renderedBody = doc.body.trim() ? markdownToG2Text(doc.body) : EMPTY_DOC_TEXT
+  const pages = g2BodyPagesFor(renderedBody)
+  const total = pages.length
   const page = doc.followCursor ? pageForCursor(doc) : clampPage(doc)
   doc.g2Page = Math.max(0, Math.min(total - 1, page))
-  const start = doc.g2Page * pageSize()
-  const raw = doc.body.slice(start, start + pageSize())
-  const header = `${doc.title || 'Untitled'} · ${doc.g2Page + 1}/${total}\n`
-  return `${header}${raw}`.slice(0, UPGRADE_LIMIT)
+  const header = `${doc.title || 'Untitled'} · ${doc.g2Page + 1}/${total} · ${g2Mode === 'menu' ? 'menu' : 'doc'}`
+  return `${header}\n${pages[doc.g2Page]}`.slice(0, UPGRADE_LIMIT)
 }
 
 function isStartupSuccess(result: RawResult): boolean {
@@ -489,7 +531,7 @@ function isUpdateSuccess(result: RawResult): boolean {
   return text.includes('SUCCESS') || text.includes('UPGRADE_TEXT_DATA_SUCCESS') || text.includes('REBUILD_PAGE_SUCCESS')
 }
 
-function displayTextProperty(content: string): unknown {
+function displayTextProperty(content: string, isEventCapture = 1): unknown {
   return new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
@@ -502,47 +544,135 @@ function displayTextProperty(content: string): unknown {
     containerID: SCREEN_CONTAINER_ID,
     containerName: SCREEN_CONTAINER_NAME,
     content: content.slice(0, STARTUP_REBUILD_LIMIT),
+    isEventCapture,
+  })
+}
+
+function menuTextProperty(content: string): unknown {
+  return new TextContainerProperty({
+    xPosition: 236,
+    yPosition: 0,
+    width: 340,
+    height: DISPLAY_HEIGHT,
+    borderWidth: 0,
+    borderColor: 0,
+    borderRadius: 0,
+    paddingLength: 8,
+    containerID: SCREEN_CONTAINER_ID,
+    containerName: SCREEN_CONTAINER_NAME,
+    content: content.slice(0, STARTUP_REBUILD_LIMIT),
     isEventCapture: 0,
   })
 }
 
-function eventTextProperty(): unknown {
-  return new TextContainerProperty({
+function buildG2MenuItems(): G2MenuItem[] {
+  const docs = [...state.docs]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 8)
+    .map((doc, index) => ({
+      label: `${doc.id === state.activeDocId ? '✓' : 'Doc'} ${index + 1}: ${doc.title || 'Untitled'}`.slice(0, 64),
+      action: 'open-doc',
+      docId: doc.id,
+    }))
+  const snapshots = state.versions
+    .filter((version) => version.docId === state.activeDocId)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 5)
+    .map((version, index) => ({
+      label: `Restore snap ${index + 1}: ${new Date(version.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`.slice(0, 64),
+      action: 'restore-snapshot',
+      versionId: version.id,
+    }))
+  return [
+    { label: '← Back to document', action: 'close-menu' },
+    { label: 'Snapshot current doc', action: 'snapshot' },
+    { label: 'Restore latest snapshot', action: 'restore-latest' },
+    ...snapshots,
+    { label: 'New blank doc', action: 'new-doc' },
+    { label: 'Next page', action: 'next-page' },
+    { label: 'Previous page', action: 'prev-page' },
+    { label: 'Follow cursor', action: 'follow-cursor' },
+    ...docs,
+  ].slice(0, 20)
+}
+
+function g2MenuProperty(): unknown {
+  menuItems = buildG2MenuItems()
+  return new ListContainerProperty({
     xPosition: 0,
     yPosition: 0,
-    width: 1,
-    height: 1,
-    borderWidth: 0,
-    borderColor: 0,
+    width: 236,
+    height: DISPLAY_HEIGHT,
+    borderWidth: 1,
+    borderColor: 8,
     borderRadius: 0,
-    paddingLength: 0,
-    containerID: EVENT_CONTAINER_ID,
-    containerName: EVENT_CONTAINER_NAME,
-    content: ' ',
+    paddingLength: 4,
+    containerID: MENU_CONTAINER_ID,
+    containerName: MENU_CONTAINER_NAME,
+    itemContainer: {
+      itemCount: menuItems.length,
+      itemWidth: 0,
+      isItemSelectBorderEn: 1,
+      itemName: menuItems.map((item) => item.label),
+    },
     isEventCapture: 1,
+  })
+}
+
+function pageContainer(content: string): unknown {
+  if (g2Mode === 'menu') {
+    return new CreateStartUpPageContainer({
+      containerTotalNum: 2,
+      listObject: [g2MenuProperty()],
+      textObject: [menuTextProperty(content)],
+    })
+  }
+  return new CreateStartUpPageContainer({
+    containerTotalNum: 1,
+    textObject: [displayTextProperty(content)],
+  })
+}
+
+function rebuildContainer(content: string): unknown {
+  if (g2Mode === 'menu') {
+    return new RebuildPageContainer({
+      containerTotalNum: 2,
+      listObject: [g2MenuProperty()],
+      textObject: [menuTextProperty(content)],
+    })
+  }
+  return new RebuildPageContainer({
+    containerTotalNum: 1,
+    textObject: [displayTextProperty(content)],
   })
 }
 
 async function ensureStartupPage(content: string): Promise<boolean> {
   if (!bridge) return false
-  if (startupPageCreated) return true
-  const container = new CreateStartUpPageContainer({
-    containerTotalNum: 2,
-    textObject: [eventTextProperty(), displayTextProperty(content)],
-  })
-  const result = await bridge.createStartUpPageContainer(container)
-  startupPageCreated = isStartupSuccess(result)
-  if (!startupPageCreated) console.warn('[G2DocsKeyboard] startup page failed:', result)
-  return startupPageCreated
+  if (!startupPageCreated) {
+    const result = await bridge.createStartUpPageContainer(pageContainer(content))
+    startupPageCreated = isStartupSuccess(result)
+    if (startupPageCreated) g2Layout = g2Mode
+    if (!startupPageCreated) console.warn('[G2DocsKeyboard] startup page failed:', result)
+    return startupPageCreated
+  }
+
+  if (g2Layout !== g2Mode) {
+    return rebuildG2(content)
+  }
+
+  return true
 }
 
 async function rebuildG2(content: string): Promise<boolean> {
   if (!bridge) return false
-  const result = await bridge.rebuildPageContainer(new RebuildPageContainer({
-    containerTotalNum: 2,
-    textObject: [eventTextProperty(), displayTextProperty(content)],
-  }))
-  return isUpdateSuccess(result)
+  const result = await bridge.rebuildPageContainer(rebuildContainer(content))
+  const success = isUpdateSuccess(result)
+  if (success) {
+    startupPageCreated = true
+    g2Layout = g2Mode
+  }
+  return success
 }
 
 async function pushToG2(content: string, force = false) {
@@ -558,6 +688,10 @@ async function pushToG2(content: string, force = false) {
   try {
     const ready = await ensureStartupPage(content)
     if (!ready) return
+
+    if (g2Layout !== g2Mode) {
+      await rebuildG2(content)
+    }
 
     const update = new TextContainerUpgrade({
       containerID: SCREEN_CONTAINER_ID,
@@ -608,7 +742,8 @@ function updateG2Meta() {
   const doc = activeDoc()
   const total = totalPagesFor(doc.body)
   doc.g2Page = doc.followCursor ? pageForCursor(doc) : clampPage(doc)
-  g2MetaEl.textContent = `Page ${doc.g2Page + 1}/${total} · ${doc.followCursor ? 'following cursor' : 'manual'}`
+  g2MetaEl.textContent = `Page ${doc.g2Page + 1}/${total} · ${doc.followCursor ? 'following cursor' : 'manual'} · ${g2Mode}`
+  glassesMenuButton.textContent = g2Mode === 'menu' ? 'Close glasses menu' : 'Open glasses menu'
 }
 
 function updateCharCount() {
@@ -672,6 +807,100 @@ function escapeHtml(value: string): string {
     .split("'").join('&#039;')
 }
 
+
+function inlineMarkdown(value: string): string {
+  let html = escapeHtml(value)
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>')
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>')
+  return html
+}
+
+function markdownToHtml(markdown: string): string {
+  const lines = markdown.split(/\r?\n/)
+  const html: string[] = []
+  let inList = false
+  let inCode = false
+  let paragraph: string[] = []
+
+  const closeParagraph = () => {
+    if (paragraph.length) {
+      html.push(`<p>${inlineMarkdown(paragraph.join(' '))}</p>`)
+      paragraph = []
+    }
+  }
+  const closeList = () => {
+    if (inList) {
+      html.push('</ul>')
+      inList = false
+    }
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('```')) {
+      closeParagraph()
+      closeList()
+      inCode = !inCode
+      html.push(inCode ? '<pre><code>' : '</code></pre>')
+      continue
+    }
+    if (inCode) {
+      html.push(escapeHtml(line))
+      continue
+    }
+    if (!trimmed) {
+      closeParagraph()
+      closeList()
+      continue
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed)
+    if (heading) {
+      closeParagraph()
+      closeList()
+      const level = heading[1].length
+      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`)
+      continue
+    }
+    const bullet = /^[-*+]\s+(.+)$/.exec(trimmed)
+    if (bullet) {
+      closeParagraph()
+      if (!inList) {
+        html.push('<ul>')
+        inList = true
+      }
+      html.push(`<li>${inlineMarkdown(bullet[1])}</li>`)
+      continue
+    }
+    paragraph.push(trimmed)
+  }
+
+  closeParagraph()
+  closeList()
+  if (inCode) html.push('</code></pre>')
+  return html.join('\n') || '<p class="empty">Nothing to preview yet.</p>'
+}
+
+function markdownToG2Text(markdown: string): string {
+  return markdown
+    .replace(/^###\s+/gm, '▸ ')
+    .replace(/^##\s+/gm, '■ ')
+    .replace(/^#\s+/gm, '◆ ')
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ''))
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/^[-*+]\s+/gm, '• ')
+}
+
+function updateMarkdownPreview() {
+  markdownPreviewEl.innerHTML = markdownToHtml(activeDoc().body)
+}
+
 function renderSettings() {
   autoSnapshotMinutesEl.value = String(state.settings.autoSnapshotMinutes)
   g2PageSizeEl.value = String(state.settings.g2PageSize)
@@ -685,6 +914,7 @@ function renderActiveDoc() {
   renderDocs()
   renderVersions()
   updateCharCount()
+  updateMarkdownPreview()
   updateG2Meta()
   scheduleG2Update(true)
   keepTryingFocus()
@@ -823,7 +1053,7 @@ async function importBackupFile(file: File) {
 function focusEditor() {
   editorEl.focus({ preventScroll: true })
   const doc = activeDoc()
-  const cursor = Math.min(doc.cursor || editorEl.value.length, editorEl.value.length)
+  const cursor = Math.min(doc.cursor ?? editorEl.value.length, editorEl.value.length)
   editorEl.setSelectionRange(cursor, cursor)
 }
 
@@ -843,17 +1073,27 @@ async function connectBridge() {
 
     if (bridge.onEvenHubEvent) {
       bridge.onEvenHubEvent((event: any) => {
-        const eventType = event?.textEvent?.eventType ?? event?.sysEvent?.eventType
-        if (eventType === OsEventTypeList?.FOREGROUND_ENTER_EVENT || eventType === 4) {
-          startupPageCreated = false
+        const textEventType = normalizedEventType(event?.textEvent?.eventType)
+        const sysEventType = normalizedEventType(event?.sysEvent?.eventType)
+        const lifecycleEventType = sysEventType ?? textEventType
+        if (isForegroundEnterEvent(lifecycleEventType)) {
+          g2Layout = ''
           lastSentToGlasses = ''
           scheduleG2Update(true)
           keepTryingFocus()
           void saveNow('foreground')
         }
-        if (eventType === OsEventTypeList?.FOREGROUND_EXIT_EVENT || eventType === OsEventTypeList?.SYSTEM_EXIT_EVENT || eventType === 5 || eventType === 7) {
+        if (isForegroundExitEvent(lifecycleEventType)) {
           void saveNow('exit')
         }
+
+        const handledListEvent = event?.listEvent ? handleListEvent(event.listEvent) : false
+        if (handledListEvent) return
+
+        const handledTextEvent = event?.textEvent ? handleTextEvent(event.textEvent) : false
+        if (handledTextEvent) return
+
+        if (event?.sysEvent) handleSysEvent(event.sysEvent)
       })
     }
   } catch (error) {
@@ -902,6 +1142,271 @@ async function verifyStorage() {
     showStorage(`Verify failed: ${message}`, 'error')
     showSave(`Verify failed: ${message}`, 'error')
   }
+}
+
+
+function openGlassesMenu() {
+  syncActiveDocFromForm()
+  g2Mode = 'menu'
+  g2Layout = ''
+  lastSentToGlasses = ''
+  updateG2Meta()
+  scheduleG2Update(true)
+}
+
+function closeGlassesMenu() {
+  g2Mode = 'document'
+  g2Layout = ''
+  lastSentToGlasses = ''
+  updateG2Meta()
+  scheduleG2Update(true)
+}
+
+function pagePreviousFromGlasses() {
+  const doc = activeDoc()
+  doc.followCursor = false
+  doc.g2Page = Math.max(0, clampPage(doc) - 1)
+  updateG2Meta()
+  markDirtyAndSave('glasses previous page')
+}
+
+function pageNextFromGlasses() {
+  const doc = activeDoc()
+  doc.followCursor = false
+  doc.g2Page = Math.min(totalPagesFor(doc.body) - 1, clampPage(doc) + 1)
+  updateG2Meta()
+  markDirtyAndSave('glasses next page')
+}
+
+function restoreLatestSnapshot() {
+  const doc = activeDoc()
+  const latest = state.versions
+    .filter((version) => version.docId === doc.id)
+    .sort((a, b) => b.createdAt - a.createdAt)[0]
+  if (!latest) {
+    showSave('No snapshot to restore', 'error')
+    return
+  }
+  selectedVersionId = latest.id
+  restoreSelectedVersion()
+}
+
+function handleG2MenuAction(item: G2MenuItem) {
+  if (item.action === 'open-doc' && item.docId) {
+    syncActiveDocFromForm()
+    state.activeDocId = item.docId
+    selectedVersionId = ''
+    renderActiveDoc()
+    openGlassesMenu()
+    void saveNow('glasses doc switch')
+    return
+  }
+  if (item.action === 'snapshot') {
+    createSnapshot('Glasses snapshot')
+    openGlassesMenu()
+    return
+  }
+  if (item.action === 'restore-latest') {
+    restoreLatestSnapshot()
+    openGlassesMenu()
+    return
+  }
+  if (item.action === 'restore-snapshot' && item.versionId) {
+    selectedVersionId = item.versionId
+    restoreSelectedVersion()
+    openGlassesMenu()
+    return
+  }
+  if (item.action === 'new-doc') {
+    createNewDoc()
+    openGlassesMenu()
+    return
+  }
+  if (item.action === 'next-page') {
+    pageNextFromGlasses()
+    return
+  }
+  if (item.action === 'prev-page') {
+    pagePreviousFromGlasses()
+    return
+  }
+  if (item.action === 'follow-cursor') {
+    const doc = activeDoc()
+    doc.followCursor = true
+    doc.g2Page = pageForCursor(doc)
+    updateG2Meta()
+    markDirtyAndSave('glasses follow cursor')
+    return
+  }
+  closeGlassesMenu()
+}
+
+function primitiveEventValue(value: unknown): unknown {
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return record.value ?? record.name ?? record.eventType ?? record.type ?? value
+  }
+  return value
+}
+
+function normalizedEventType(eventType: unknown): number | string | undefined {
+  const raw = primitiveEventValue(eventType)
+  if (raw === undefined || raw === null || raw === '') return undefined
+  if (typeof raw === 'string' && /^-?\d+$/.test(raw.trim())) return Number(raw)
+
+  const normalizer = (OsEventTypeList as Record<string, unknown>)?.fromJson
+  const normalized = typeof normalizer === 'function' ? normalizer(raw) as number | string | undefined : raw as number | string | undefined
+  if (typeof normalized === 'string' && /^-?\d+$/.test(normalized.trim())) return Number(normalized)
+  return normalized
+}
+
+function eventTypeName(eventType: unknown): string {
+  const normalized = normalizedEventType(eventType)
+  return String(normalized ?? primitiveEventValue(eventType) ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
+}
+
+function isClickEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.CLICK_EVENT || normalized === OsEventTypeList?.DOUBLE_CLICK_EVENT || normalized === 0 || normalized === 3 || name === 'CLICK_EVENT' || name === 'DOUBLE_CLICK_EVENT' || name === 'CLICK' || name === 'DOUBLE_CLICK'
+}
+
+function isScrollBottomEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.SCROLL_BOTTOM_EVENT || normalized === 2 || name === 'SCROLL_BOTTOM_EVENT' || name === 'SCROLL_BOTTOM' || name === 'SCROLL_DOWN' || name === 'DOWN'
+}
+
+function isScrollTopEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.SCROLL_TOP_EVENT || normalized === 1 || name === 'SCROLL_TOP_EVENT' || name === 'SCROLL_TOP' || name === 'SCROLL_UP' || name === 'UP'
+}
+
+function isForegroundEnterEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.FOREGROUND_ENTER_EVENT || normalized === 4 || name === 'FOREGROUND_ENTER_EVENT' || name === 'FOREGROUND_ENTER'
+}
+
+function isForegroundExitEvent(eventType: unknown): boolean {
+  const normalized = normalizedEventType(eventType)
+  const name = eventTypeName(eventType)
+  return normalized === OsEventTypeList?.FOREGROUND_EXIT_EVENT || normalized === OsEventTypeList?.SYSTEM_EXIT_EVENT || normalized === 5 || normalized === 7 || name === 'FOREGROUND_EXIT_EVENT' || name === 'SYSTEM_EXIT_EVENT' || name === 'FOREGROUND_EXIT' || name === 'SYSTEM_EXIT'
+}
+
+function normalizedEventSource(eventSource: unknown): number | string | undefined {
+  const raw = primitiveEventValue(eventSource)
+  if (raw === undefined || raw === null || raw === '') return undefined
+  if (typeof raw === 'string' && /^-?\d+$/.test(raw.trim())) return Number(raw)
+
+  const normalizer = (EventSourceType as Record<string, unknown>)?.fromJson
+  const normalized = typeof normalizer === 'function' ? normalizer(raw) as number | string | undefined : raw as number | string | undefined
+  if (typeof normalized === 'string' && /^-?\d+$/.test(normalized.trim())) return Number(normalized)
+  return normalized
+}
+
+function eventSourceName(eventSource: unknown): string {
+  const normalized = normalizedEventSource(eventSource)
+  return String(normalized ?? primitiveEventValue(eventSource) ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
+}
+
+function isRingEventSource(eventSource: unknown): boolean {
+  const normalized = normalizedEventSource(eventSource)
+  const name = eventSourceName(eventSource)
+  return normalized === EventSourceType?.TOUCH_EVENT_FROM_RING || normalized === 2 || name === 'TOUCH_EVENT_FROM_RING' || name === 'RING'
+}
+
+function isGestureEventSource(eventSource: unknown): boolean {
+  const normalized = normalizedEventSource(eventSource)
+  const name = eventSourceName(eventSource)
+  return eventSource === undefined || eventSource === null || eventSource === '' || isRingEventSource(eventSource) || normalized === EventSourceType?.TOUCH_EVENT_FROM_GLASSES_L || normalized === EventSourceType?.TOUCH_EVENT_FROM_GLASSES_R || normalized === 1 || normalized === 3 || name === 'TOUCH_EVENT_FROM_GLASSES_L' || name === 'TOUCH_EVENT_FROM_GLASSES_R' || name === 'GLASSES_L' || name === 'GLASSES_R'
+}
+
+function toggleGlassesMenu() {
+  if (g2Mode === 'menu') closeGlassesMenu()
+  else openGlassesMenu()
+}
+
+function handleSysEvent(sysEvent: any): boolean {
+  if (!isGestureEventSource(sysEvent?.eventSource)) return false
+
+  if (isScrollBottomEvent(sysEvent?.eventType)) {
+    if (g2Mode !== 'menu') pageNextFromGlasses()
+    return true
+  }
+  if (isScrollTopEvent(sysEvent?.eventType)) {
+    if (g2Mode !== 'menu') pagePreviousFromGlasses()
+    return true
+  }
+  if (isClickEvent(sysEvent?.eventType)) {
+    toggleGlassesMenu()
+    return true
+  }
+  return false
+}
+
+function maybeNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number(value)
+  return undefined
+}
+
+function selectedMenuItemForEvent(listEvent: any): G2MenuItem | undefined {
+  const selectedName = [
+    listEvent?.currentSelectItemName,
+    listEvent?.currentSelectedItemName,
+    listEvent?.selectItemName,
+    listEvent?.selectedItemName,
+    listEvent?.itemName,
+  ].find((value) => typeof value === 'string' && value.length) as string | undefined
+
+  if (selectedName) {
+    const byName = menuItems.find((candidate) => candidate.label === selectedName)
+    if (byName) return byName
+  }
+
+  const selectedIndex = [
+    listEvent?.currentSelectItemIndex,
+    listEvent?.currentSelectedItemIndex,
+    listEvent?.selectItemIndex,
+    listEvent?.selectedItemIndex,
+    listEvent?.itemIndex,
+    listEvent?.index,
+    listEvent?.currentIndex,
+  ].map(maybeNumber).find((value) => value !== undefined)
+
+  if (selectedIndex === undefined) return undefined
+  return menuItems[selectedIndex] ?? menuItems[selectedIndex - 1]
+}
+
+function handleListEvent(listEvent: any): boolean {
+  if (maybeNumber(listEvent?.containerID) !== MENU_CONTAINER_ID && listEvent?.containerName !== MENU_CONTAINER_NAME) return false
+  const hasSelection = selectedMenuItemForEvent(listEvent) !== undefined
+  if (listEvent?.eventType !== undefined && !isClickEvent(listEvent.eventType)) return false
+  if (!hasSelection) return false
+
+  const item = selectedMenuItemForEvent(listEvent)
+  if (!item) return false
+  handleG2MenuAction(item)
+  return true
+}
+
+function handleTextEvent(textEvent: any): boolean {
+  if (maybeNumber(textEvent?.containerID) !== SCREEN_CONTAINER_ID && textEvent?.containerName !== SCREEN_CONTAINER_NAME) return false
+  if (isScrollBottomEvent(textEvent?.eventType)) {
+    pageNextFromGlasses()
+    return true
+  }
+  if (isScrollTopEvent(textEvent?.eventType)) {
+    pagePreviousFromGlasses()
+    return true
+  }
+  if (isClickEvent(textEvent?.eventType)) {
+    toggleGlassesMenu()
+    return true
+  }
+  return false
 }
 
 function wireEvents() {
@@ -961,6 +1466,7 @@ function wireEvents() {
     updateG2Meta()
     markDirtyAndSave('page')
   })
+  glassesMenuButton.addEventListener('click', toggleGlassesMenu)
   tailButton.addEventListener('click', () => {
     const doc = activeDoc()
     doc.followCursor = true
@@ -1027,11 +1533,14 @@ function wireEvents() {
       void saveNow('hidden')
     } else {
       keepTryingFocus()
-      startupPageCreated = false
+      g2Mode = 'document'
+      g2Layout = ''
       lastSentToGlasses = ''
       scheduleG2Update(true)
     }
   })
+  window.addEventListener('focus', keepTryingFocus)
+
   window.addEventListener('pagehide', () => {
     emergencyBrowserMirror()
     void saveNow('pagehide')
